@@ -18,6 +18,17 @@ const float setDp = 2.5;
 int currentPWMValue1 = -1;
 int currentPWMValue2 = -1;
 
+//Variables below were in setup before
+float aFlow = 0.0;
+float aTemperature = 0.0;
+uint16_t aSignalingFlags = 0u;
+//float P1; float P2;
+float Q0; float Q1; float Q2;
+float Qm = 0.0; float dP = 0.0;
+bool dpReached = false; bool gelSeating = true; bool errorFlag = false;
+int seatingAttempt = 0; bool evenFlow = false;
+int timer1 = 0; int timer2 = 0;
+
 static int16_t error;
 
 void(* resetFunc) (void) = 0;
@@ -29,6 +40,14 @@ void pcaselect(uint8_t i) {
   Wire.beginTransmission(PCAADDR);
   Wire.write(1 << i);
   Wire.endTransmission();  
+}
+
+void print_byte_array(uint8_t* array, uint16_t len) {
+  uint16_t i = 0;
+  Serial.print("0x");
+  for (; i < len; i++) {
+    Serial.print(array[i], HEX);
+  }
 }
 
 void setup_flow_sensor(SensirionI2cSf06Lf& sensor, int16_t error, uint8_t t, uint32_t productIdentifier, uint8_t serialNumber[8]) {
@@ -71,13 +90,13 @@ float read_dp() {
   //float PressP1 = ((P1Value * 0.00488758) - 0.5) * 15;
   //float PressP2 = ((P2Value * 0.00488758) - 0.5) * 15;
   //float dP = PressP1 - PressP2;
-  float dP = read_p(P1Pin) - read_p(P2Pin);
+  dP = read_p(P1Pin) - read_p(P2Pin);
   return dP;
 }
 
 void adjust_dp() {
-  float dp = read_dp();
-  if (dp < (setDp - 0.1) && !errorFlag) {
+  dP = read_dp();
+  if (dP < (setDp - 0.1) && !errorFlag) {
     if (currentPWMValue1 < 200) {
       currentPWMValue1 = currentPWMValue1 + 1;
       analogWrite(PressReg1Pin, currentPWMValue1);
@@ -88,7 +107,7 @@ void adjust_dp() {
         errorFlag = true;
         }
   }
-  if (dp > (setDp + 0.1) && !errorFlag) {
+  if (dP > (setDp + 0.1) && !errorFlag) {
     if (currentPWMValue1 > 0) {
       currentPWMValue1 = currentPWMValue1 - 1;
       analogWrite(PressReg1Pin, currentPWMValue1);
@@ -156,6 +175,26 @@ void adjust_Q() {
   }
 }
 
+void print_all_sensor_values() {
+  Serial.print("Time: ");
+  Serial.print(millis());
+  Serial.print("ms, P1: ");
+  Serial.print(read_p(P1Pin));
+  Serial.print("psi, P2: ");
+  Serial.print(read_p(P2Pin));
+  Serial.print("psi, dP: ");
+  Serial.print(read_dp());
+  Serial.print("psi, Q0: ");
+  Serial.print(read_Q(sensor0, error, 0, aFlow));
+  Serial.print("mL/min, Q1: ");
+  Serial.print(read_Q(sensor1, error, 1, aFlow));
+  Serial.print("mL/min, Q2: ");
+  Serial.print(read_Q(sensor2, error, 2, aFlow));
+  Serial.print("mL/min, Qm: ");
+  Serial.print(read_Qm(aFlow));
+  Serial.println("mL/min");
+}
+
 void setup() {
   Serial.begin(9600);
   while (!Serial) {
@@ -171,18 +210,9 @@ void setup() {
 
   pinMode(P1Pin, INPUT);
   pinMode(P2Pin, INPUT);
-  pinMode(PressReadPin, INPUT);
-  pinMode(PressRegPin, OUTPUT);
-
-  float aFlow = 0.0;
-  float aTemperature = 0.0;
-  uint16_t aSignalingFlags = 0u;
-  float P1; float P2;
-  float Q0; float Q1; float Q2;
-  float Qm = 0.0; float dP = 0.0;
-  bool dpReached = false; bool gelSeating = true; bool errorFlag = false;
-  int seatingAttempt = 0; bool evenFlow = false;
-  int timer1 = 0; int timer2 = 0;
+  //pinMode(PressReadPin, INPUT);
+  pinMode(PressReg1Pin, OUTPUT);
+  pinMode(PressReg2Pin, OUTPUT);
 
   Serial.println("Setup Complete!");
   delay(2000);
@@ -191,15 +221,17 @@ void setup() {
 void loop() {
   while (Serial.available() == 0) {
     //Serial print function for all sensor values
+    print_all_sensor_values();
+    delay(200);
   }
   String userInput = Serial.readString();
   userInput.trim(); 
   if (userInput == "START" || !gelSeating) {
     //place the code that attains and maintains setDp
-    if (seatingAttempt == 3) break;
+    if (seatingAttempt == 3) return;
     do {
       if (!dpReached) adjust_dp();
-      if (dp > (setDp - 0.1) && dp < (setDp + 0.1)) dpReached = true;
+      if (dP > (setDp - 0.1) && dP < (setDp + 0.1)) dpReached = true;
       if (errorFlag) break;
       if (dpReached && Qm < gelSeatQm) {
         timer2++; timer1++; delay(1000);
@@ -214,8 +246,9 @@ void loop() {
         gelSeating = true; break;
       }
       //Serial print function for all sensor values
+      print_all_sensor_values();
     } while (!dpReached || !gelSeating);
-    Serial.println("dP reached and Gel seated! Type READY to go to next step");
+    Serial.println("dP reached and Gel seated! Type READY to go to the next step");
     //code below does the same thing as the code above
     /*
     while (true) {
@@ -247,12 +280,27 @@ void loop() {
     //Place the code that splits the flow at the inlet of Xfer chamber
     do {
       adjust_Q();
-      if (Q1 < (Q0/2)-0.1 && Q1 < (Q0/2)+0.1) evenFlow = true;
+      delay(200);
+      if (Q1 > (Q0/2)-0.1 && Q1 < (Q0/2)+0.1) evenFlow = true;
       //Serial print function for all sensor values
+      print_all_sensor_values();
     } while (!evenFlow);
     Serial.println("Flow is evenly split between gel and non-gel side, Type GO to start transfer");
   }
+  if (userInput == "GO") {
+    unsigned long timeNow = millis();
+    do {
+      //keep dp in check
+      if (dP < (setDp - 0.1) || dP > (setDp + 0.1)) adjust_dp();
+      delay(200);
+      if (Q1 < (Q0/2)-0.1 || Q1 > (Q0/2)+0.1) adjust_Q();
+      delay(200);
+      //Serial print function for all sensor values
+      print_all_sensor_values();
+    } while (millis() - timeNow < 1200000);
+  }
   if (userInput == "RESET") {
     //set pressure regulators to 0 
+    resetFunc();
   }
 }
